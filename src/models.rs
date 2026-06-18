@@ -93,6 +93,21 @@ pub struct UpdateScheduleRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ScheduleConflictInfo {
+    pub conflicting_schedule_id: String,
+    pub popup_id: String,
+    pub popup_name: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScheduleConflictError {
+    pub message: String,
+    pub conflicts: Vec<ScheduleConflictInfo>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub code: i32,
     pub message: String,

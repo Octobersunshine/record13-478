@@ -5,10 +5,13 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
-use crate::models::{ApiResponse, CreateScheduleRequest, PopupDisplaySchedule, UpdateScheduleRequest};
+use crate::models::{
+    ApiResponse, CreateScheduleRequest, PopupDisplaySchedule, ScheduleConflictError,
+    ScheduleConflictInfo, UpdateScheduleRequest,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ListScheduleQuery {
@@ -16,15 +19,72 @@ pub struct ListScheduleQuery {
     pub popup_id: Option<String>,
 }
 
+#[derive(Debug, FromRow)]
+struct ConflictingScheduleRow {
+    pub id: String,
+    pub popup_id: String,
+    pub popup_name: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
+async fn find_conflicting_schedules(
+    pool: &SqlitePool,
+    live_room_id: &str,
+    start_time: &str,
+    end_time: &str,
+    exclude_schedule_id: Option<&str>,
+) -> Result<Vec<ScheduleConflictInfo>, sqlx::Error> {
+    let sql = r#"
+        SELECT s.id, s.popup_id, p.product_name AS popup_name, s.start_time, s.end_time
+        FROM popup_display_schedule s
+        INNER JOIN live_room_popup p ON p.id = s.popup_id
+        WHERE s.live_room_id = ?
+          AND s.enabled = 1
+          AND s.start_time < ?
+          AND s.end_time > ?
+    "#;
+
+    let rows: Vec<ConflictingScheduleRow> = if let Some(exclude_id) = exclude_schedule_id {
+        let final_sql = format!("{} AND s.id <> ?", sql);
+        sqlx::query_as::<_, ConflictingScheduleRow>(&final_sql)
+            .bind(live_room_id)
+            .bind(end_time)
+            .bind(start_time)
+            .bind(exclude_id)
+            .fetch_all(pool)
+            .await?
+    } else {
+        sqlx::query_as::<_, ConflictingScheduleRow>(sql)
+            .bind(live_room_id)
+            .bind(end_time)
+            .bind(start_time)
+            .fetch_all(pool)
+            .await?
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ScheduleConflictInfo {
+            conflicting_schedule_id: r.id,
+            popup_id: r.popup_id,
+            popup_name: r.popup_name,
+            start_time: r.start_time,
+            end_time: r.end_time,
+        })
+        .collect())
+}
+
 pub async fn create_schedule(
     State(pool): State<SqlitePool>,
     Json(req): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
-    let popup_exists: i32 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM live_room_popup WHERE id = ?)")
-        .bind(&req.popup_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or(0);
+    let popup_exists: i32 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM live_room_popup WHERE id = ?)")
+            .bind(&req.popup_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
 
     if popup_exists == 0 {
         return (
@@ -32,6 +92,48 @@ pub async fn create_schedule(
             Json(ApiResponse::<()>::error(400, "Popup not found")),
         )
             .into_response();
+    }
+
+    if req.start_time >= req.end_time {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::<()>::error(400, "start_time must be earlier than end_time")),
+        )
+            .into_response();
+    }
+
+    match find_conflicting_schedules(
+        &pool,
+        &req.live_room_id,
+        &req.start_time,
+        &req.end_time,
+        None,
+    )
+    .await
+    {
+        Ok(conflicts) if !conflicts.is_empty() => {
+            let err = ScheduleConflictError {
+                message: "Time interval conflicts with existing popup schedules".to_string(),
+                conflicts,
+            };
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiResponse::<ScheduleConflictError> {
+                    code: 409,
+                    message: "conflict".to_string(),
+                    data: Some(err),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::<()>::error(500, e.to_string())),
+            )
+                .into_response();
+        }
+        _ => {}
     }
 
     let id = Uuid::new_v4().to_string();
@@ -62,7 +164,9 @@ pub async fn create_schedule(
     .await;
 
     match result {
-        Ok(schedule) => (StatusCode::CREATED, Json(ApiResponse::success(schedule))).into_response(),
+        Ok(schedule) => {
+            (StatusCode::CREATED, Json(ApiResponse::success(schedule))).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::<()>::error(500, e.to_string())),
@@ -163,13 +267,58 @@ pub async fn update_schedule(
         }
     };
 
-    let now = chrono::Utc::now().to_rfc3339();
-    let start_time = req.start_time.unwrap_or(existing.start_time);
-    let end_time = req.end_time.unwrap_or(existing.end_time);
+    let start_time = req.start_time.unwrap_or(existing.start_time.clone());
+    let end_time = req.end_time.unwrap_or(existing.end_time.clone());
     let repeat_mode = req.repeat_mode.unwrap_or(existing.repeat_mode);
     let repeat_interval_secs = req.repeat_interval_secs.or(existing.repeat_interval_secs);
     let display_duration_secs = req.display_duration_secs.unwrap_or(existing.display_duration_secs);
     let enabled = req.enabled.unwrap_or(existing.enabled);
+
+    if start_time >= end_time {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::<()>::error(400, "start_time must be earlier than end_time")),
+        )
+            .into_response();
+    }
+
+    if enabled {
+        match find_conflicting_schedules(
+            &pool,
+            &existing.live_room_id,
+            &start_time,
+            &end_time,
+            Some(&existing.id),
+        )
+        .await
+        {
+            Ok(conflicts) if !conflicts.is_empty() => {
+                let err = ScheduleConflictError {
+                    message: "Time interval conflicts with existing popup schedules".to_string(),
+                    conflicts,
+                };
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ApiResponse::<ScheduleConflictError> {
+                        code: 409,
+                        message: "conflict".to_string(),
+                        data: Some(err),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::<()>::error(500, e.to_string())),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
 
     let result = sqlx::query_as::<_, PopupDisplaySchedule>(
         r#"
