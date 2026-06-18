@@ -107,6 +107,74 @@ pub struct ScheduleConflictError {
     pub conflicts: Vec<ScheduleConflictInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PopupStatsSummary {
+    pub popup_id: String,
+    pub live_room_id: String,
+    pub impression_count: i64,
+    pub click_count: i64,
+    pub ctr: Option<f64>,
+    pub last_impression_at: Option<String>,
+    pub last_click_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PopupStatsDaily {
+    pub popup_id: String,
+    pub live_room_id: String,
+    pub stat_date: String,
+    pub impression_count: i64,
+    pub click_count: i64,
+    pub ctr: Option<f64>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrackEventRequest {
+    pub popup_id: String,
+    pub live_room_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrackEventResult {
+    pub popup_id: String,
+    pub event_type: String,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DailyStatsQuery {
+    pub popup_id: Option<String>,
+    pub live_room_id: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LiveRoomPopupStatsRow {
+    pub id: String,
+    pub live_room_id: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub product_image: Option<String>,
+    pub product_price: f64,
+    pub original_price: Option<f64>,
+    pub popup_type: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub action_url: Option<String>,
+    pub sort_order: i32,
+    pub enabled: bool,
+    pub impression_count: i64,
+    pub click_count: i64,
+    pub ctr: Option<f64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub code: i32,

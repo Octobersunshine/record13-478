@@ -2,6 +2,7 @@ mod db;
 mod models;
 mod popup_handler;
 mod schedule_handler;
+mod stats_handler;
 
 use axum::{
     routing::{delete, get, post, put},
@@ -30,9 +31,20 @@ async fn main() {
         .route("/{id}", put(schedule_handler::update_schedule))
         .route("/{id}", delete(schedule_handler::delete_schedule));
 
+    let stats_routes = Router::new()
+        .route("/impression", post(stats_handler::track_impression))
+        .route("/click", post(stats_handler::track_click))
+        .route("/popup/{popup_id}", get(stats_handler::get_popup_stats))
+        .route(
+            "/live-room/{live_room_id}",
+            get(stats_handler::list_live_room_stats),
+        )
+        .route("/daily", get(stats_handler::list_daily_stats));
+
     let app = Router::new()
         .nest("/api/popups", popup_routes)
         .nest("/api/schedules", schedule_routes)
+        .nest("/api/stats", stats_routes)
         .layer(CorsLayer::permissive())
         .with_state(pool);
 

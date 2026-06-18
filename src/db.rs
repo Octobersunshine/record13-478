@@ -80,5 +80,51 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS popup_stats_summary (
+            popup_id TEXT PRIMARY KEY,
+            live_room_id TEXT NOT NULL,
+            impression_count INTEGER NOT NULL DEFAULT 0,
+            click_count INTEGER NOT NULL DEFAULT 0,
+            last_impression_at TEXT,
+            last_click_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS popup_stats_daily (
+            popup_id TEXT NOT NULL,
+            live_room_id TEXT NOT NULL,
+            stat_date TEXT NOT NULL,
+            impression_count INTEGER NOT NULL DEFAULT 0,
+            click_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (popup_id, stat_date)
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_stats_summary_live_room ON popup_stats_summary(live_room_id);",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_stats_daily_live_room_date ON popup_stats_daily(live_room_id, stat_date);",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
